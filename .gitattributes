@@ -1,0 +1,9 @@
+# Normalize line endings to LF so byte-diff determinism checks are meaningful
+# across OS checkouts (spec §8 / §11 regenerate-and-diff).
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.csv text eol=lf
+*.html text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
