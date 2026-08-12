@@ -42,8 +42,8 @@ def _java_library_path() -> str | None:
     return bin_dir.replace(os.sep, "/")
 
 
-def build_session(app_name: str = "superloop-billing-anomaly-detector") -> SparkSession:
-    """Create (or reuse) a local Delta-enabled SparkSession."""
+def _base_builder(app_name: str):
+    """Return a plain builder with the env/loopback recipe applied (no Delta)."""
     _configure_environment()
 
     builder = (
@@ -53,15 +53,6 @@ def build_session(app_name: str = "superloop-billing-anomaly-detector") -> Spark
         # to an address the Python worker cannot reach (-> "worker failed to connect").
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.driver.bindAddress", "127.0.0.1")
-        # Delta Lake support.
-        .config(
-            "spark.sql.extensions",
-            "io.delta.sql.DeltaSparkSessionExtension",
-        )
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
     )
 
     lib_path = _java_library_path()
@@ -69,5 +60,33 @@ def build_session(app_name: str = "superloop-billing-anomaly-detector") -> Spark
         builder = builder.config(
             "spark.driver.extraJavaOptions", f"-Djava.library.path={lib_path}"
         )
+    return builder
 
+
+def build_plain_session(app_name: str = "superloop-billing-anomaly-detector") -> SparkSession:
+    """Create (or reuse) a local SparkSession with no Delta extensions.
+
+    Uses only the local Spark distribution already on the CLASSPATH via PySpark —
+    it never reaches out to Maven Central, so it works on offline / restricted-egress
+    machines. Use this for tests and any computation that only touches in-memory
+    DataFrames; use :func:`build_session` only where Delta tables are actually read
+    or written.
+    """
+    return _base_builder(app_name).getOrCreate()
+
+
+def build_session(app_name: str = "superloop-billing-anomaly-detector") -> SparkSession:
+    """Create (or reuse) a local Delta-enabled SparkSession.
+
+    Delta JARs come from Maven via ``configure_spark_with_delta_pip``, which
+    requires outbound internet to repo1.maven.org the first time. Only use this
+    where Delta tables are actually read/written (the pipeline stages).
+    """
+    builder = _base_builder(app_name).config(
+        "spark.sql.extensions",
+        "io.delta.sql.DeltaSparkSessionExtension",
+    ).config(
+        "spark.sql.catalog.spark_catalog",
+        "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+    )
     return configure_spark_with_delta_pip(builder).getOrCreate()

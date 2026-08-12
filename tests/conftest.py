@@ -14,9 +14,9 @@ def spark():
     # Ensure the worker interpreter + loopback env are set before the JVM starts.
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
     os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
-    from src.spark import build_session
+    from src.spark import build_plain_session
 
-    session = build_session("superloop-tests")
+    session = build_plain_session("superloop-tests")
     yield session
     session.stop()
 
