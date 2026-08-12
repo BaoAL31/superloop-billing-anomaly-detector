@@ -52,6 +52,14 @@ def _drilldown_table(df: pd.DataFrame) -> go.Figure:
     view = df.sort_values(["severity", "customer_id", "rule_id"]).copy()
     view["rule"] = view["rule_id"].map(RULE_LABELS)
     view["flag_date"] = view["flag_date"].astype(str)
+    # Defense-in-depth: escape string cells before they are JSON-embedded in a
+    # <script> tag, so a stray `</script>` can never break out of the page. Data is
+    # currently deterministic/trusted, but this keeps the HTML safe if sources grow.
+    import html
+
+    view["invoice_id"] = view["invoice_id"].fillna("")  # keep blank for orphaned credits
+    for col in ["customer_id", "invoice_id", "flag_date", "explanation"]:
+        view[col] = view[col].map(lambda v: html.escape(str(v)))
     table = go.Figure(
         data=[
             go.Table(
