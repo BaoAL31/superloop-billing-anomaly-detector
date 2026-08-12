@@ -1,15 +1,31 @@
 # Superloop billing-anomaly detector
 
 A reproducible local detector for a Superloop-style ISP billing pipeline. It finds
-billing anomalies — wrongful arrears notices, orphaned credits, missing statements,
-dishonoured debits, and duplicate invoices — using a faithful, local
+billing anomalies (wrongful arrears notices, orphaned credits, missing statements,
+dishonoured debits, and duplicate invoices) using a faithful, local
 **PySpark + Delta Lake** medallion pipeline with **deterministic synthetic data** as
 ground truth.
 
 Everything is clone-and-run, no hosted Databricks, no signup, no quota risk (see
 `docs/adr/0001-local-pyspark-with-delta-spark.md`). The same PySpark DataFrame API,
 Delta table format and Bronze→Silver→Gold medallion structure a real production
-pipeline would use — only the execution location is local.
+pipeline would use; only the execution location is local.
+
+## Motivation
+
+Subscription billing runs on trust in the ledger. When an account is in credit but
+the system still sends an arrears notice, that is not just a support ticket; it is the
+billing pipeline silently drifting from its source of truth. The recurring failure
+modes (wrongful notices, orphaned credits, statement gaps, duplicate invoices) hide in
+the gap between the ledger, which holds the money, and the allocation state, which says
+which invoices are paid.
+
+This project makes that failure mode concrete and testable. It models the
+ledger/allocation split explicitly, injects defects at the boundary between the two,
+computes notices the way a naive dunning rule would, and gates every detection rule
+against committed ground truth. The result is a detector whose behavior is provable,
+not hand-waved, built as a faithful Delta medallion pipeline anyone can clone and run
+locally without a hosted Databricks account.
 
 ## Quickstart
 
@@ -22,9 +38,9 @@ python run_pipeline.py          # full end-to-end: generate -> Bronze -> Silver 
 
 This produces:
 
-- `fixtures/` — committed deterministic Bronze CSVs + `ground_truth_manifest.csv`
-- `data/bronze`, `data/silver`, `data/gold` — Delta tables (git-ignored)
-- `dashboard.html` — a single self-contained, deterministic Plotly dashboard
+- `fixtures/`: committed deterministic Bronze CSVs + `ground_truth_manifest.csv`
+- `data/bronze`, `data/silver`, `data/gold`: Delta tables (git-ignored)
+- `dashboard.html`: a single self-contained, deterministic Plotly dashboard
 
 ### Java & Windows requirements
 
@@ -59,16 +75,16 @@ data without ever re-running generation.
 
 | Rule | Anomaly | Severity |
 |------|---------|----------|
-| #1 | **Wrongful arrears notice** — a notice fired while the account was in credit | high → **critical** past threshold |
-| #2 | **Orphaned credit** — a credit/payment unapplied for > 30 days | warning |
-| #3 | **Statement continuity break** — gap between consecutive statements > 3 days | medium |
-| #4 | **Dishonoured debit with no cause** — failed debit while account in credit | critical |
-| #5 | **Duplicate invoice** — overlapping statement periods, near-identical amount | medium → **high** past threshold |
+| #1 | **Wrongful arrears notice** (a notice fired while the account was in credit) | high → **critical** past threshold |
+| #2 | **Orphaned credit** (a credit/payment unapplied for > 30 days) | warning |
+| #3 | **Statement continuity break** (gap between consecutive statements > 3 days) | medium |
+| #4 | **Dishonoured debit with no cause** (failed debit while account in credit) | critical |
+| #5 | **Duplicate invoice** (overlapping statement periods, near-identical amount) | medium → **high** past threshold |
 
 Escalation follows the *escalation principle* (spec §6): magnitude-escalation only
 where the dollar-at-risk is well-defined (#1, #5); the rest are static. **Honest
 caveat:** the `notice_escalation_threshold`/`duplicate_escalation_threshold` defaults
-($100) and `grace_days` are configurable in `src/config.py` — `grace_days` is anchored
+($100) and `grace_days` are configurable in `src/config.py`; `grace_days` is anchored
 to Superloop's published terms, the $100 thresholds are **not** and are defaults only.
 
 ## Design decisions
@@ -77,39 +93,39 @@ These are the outcomes of the grilling / domain-modeling session (`CONTEXT.md` f
 full glossary, `billing_anomaly_detector_spec.md` for the consolidated spec, and
 `docs/adr/0001-*` for the stack). Each maps to a piece of the implementation:
 
-1. **Ledger model** — the running account balance, keyed `(customer_id, effective_date)`,
+1. **Ledger model**: the running account balance, keyed `(customer_id, effective_date)`,
    is the source of truth. `payments` + *independent credits* are credit sources; an
    **overpayment is emergent state**, never a stored additive row.
-2. **Allocation layer** — a separate `invoice_allocations` table is *deliberately allowed
+2. **Allocation layer**: a separate `invoice_allocations` table is *deliberately allowed
    to be wrong/stale*; the documented bug is a **reconciliation failure** between the
    balance view and the allocation view.
-3. **Notice generation** — notices are **computed in Silver** by a naive dunning rule firing
+3. **Notice generation**: notices are **computed in Silver** by a naive dunning rule firing
    at `due_date + grace_days` when `allocated_total < amount_due`. Defects are injected at
    the allocation layer. A credit arriving after the window closes is a legitimate unpaid
    notice, **not** a bug; a credit present before evaluation but never swept is the injected
    bug.
-4. **Stack** — local PySpark + `delta-spark`, medallion as staged dirs, clone-and-run
+4. **Stack**: local PySpark + `delta-spark`, medallion as staged dirs, clone-and-run
    (ADR-0001); no hosted Databricks.
-5. **Rules #3/#5 disjoint** — #3 is gaps-only, #5 is overlaps-only, with configurable
+5. **Rules #3/#5 disjoint**: #3 is gaps-only, #5 is overlaps-only, with configurable
    thresholds; orthogonal injection plus a small tracked-overlap subset exercises rule
    independence.
-6. **Severity (escalation principle)** — magnitude-escalation only where the dollar-at-risk
+6. **Severity (escalation principle)**: magnitude-escalation only where the dollar-at-risk
    is well-defined (#1, #5); the rest static. Default thresholds are honestly **not**
    Superloop-anchored.
-7. **Explanation** — a deterministic per-rule template (always on) + an **optional**, gated
+7. **Explanation**: a deterministic per-rule template (always on) + an **optional**, gated
    NIM paraphrase layer that never invents facts and is excluded from CI.
-8. **Reproducibility** — plain-Python/pandas generator, CSV fixtures, explicit
+8. **Reproducibility**: plain-Python/pandas generator, CSV fixtures, explicit
    `random.Random(SEED)`, counted injection, a ground-truth manifest, and a
    regenerate-and-diff CI gate.
-9. **Dashboard** — a single deterministic `dashboard.html` with fixed `div_id`s and inline
+9. **Dashboard**: a single deterministic `dashboard.html` with fixed `div_id`s and inline
    Plotly.js; text baked at generation time; byte-diff covered.
-10. **Testing** — three layers (Silver plumbing, per-rule, Gold-vs-manifest); staged
+10. **Testing**: three layers (Silver plumbing, per-rule, Gold-vs-manifest); staged
     `run_pipeline.py` with `mode="overwrite"` and pre-flight checks.
 
 ## Reproducibility
 
 The generator (`src/generator.py`) runs in **plain single-threaded Python/pandas**
-(never PySpark — avoids Spark's partitioning determinism trap), uses an explicitly
+(never PySpark, which avoids Spark's partitioning determinism trap), uses an explicitly
 instantiated `random.Random(SEED)`, and never iterates sets (per-process hash seed
 would break byte-reproducibility). It writes committed CSV fixtures and a
 `ground_truth_manifest.csv` with exact counted injection (37 allocation, 12 orphaned
@@ -141,10 +157,10 @@ python -m pytest tests/ -q
 
 Three layers (spec §9):
 
-1. **Silver transforms** — balance accumulation, `allocated_total_at_sent` timing,
+1. **Silver transforms**: balance accumulation, `allocated_total_at_sent` timing,
    notice boundary.
-2. **Per-rule unit tests** — each rule on crafted mini-fixtures (detection + severity).
-3. **Gold-vs-manifest integration** — 100% recall, zero false positives, severity
+2. **Per-rule unit tests**: each rule on crafted mini-fixtures (detection + severity).
+3. **Gold-vs-manifest integration**: 100% recall, zero false positives, severity
    matches the manifest, simulation sanity, and rule independence.
 
 All Spark tests share one session fixture and write only to `tmp_path`. CI runs the
@@ -184,7 +200,7 @@ All tunables live in `src/config.py` as named constants:
 | `NOTICE_ESCALATION_THRESHOLD` | `$100` | Rule #1 high → critical (default, **not** provider-anchored) |
 | `DUPLICATE_ESCALATION_THRESHOLD` | `$100` | Rule #5 medium → high (default, **not** provider-anchored) |
 | `SEVERITY_BASE` | `{1:high, 2:warning, 3:medium, 4:critical, 5:medium}` | Static severity base per rule |
-| `NIM_*` | — | Optional LLM paraphrase: endpoint, pinned model id, 40 req/min cap, `NIM_API_KEY` env var |
+| `NIM_*` | see `src/config.py` | Optional LLM paraphrase: endpoint, pinned model id, 40 req/min cap, `NIM_API_KEY` env var |
 | `FIXTURE_DIR` / `DATA_DIR` / `DASHBOARD_PATH` | `fixtures` / `data` / `dashboard.html` | Stage I/O locations |
 
 ## Honest scope notes
